@@ -1,7 +1,6 @@
 import React from 'react';
 import { useCaseStore } from '../store/caseStore';
-import { FileText, Download, Printer, Shield, Zap, LayoutDashboard, Clock } from 'lucide-react';
-import { generateDetailedPDF } from '../utils/pdfGenerator';
+import { FileText, Printer, Shield, Zap, LayoutDashboard, Clock } from 'lucide-react';
 
 export default function ReportPanel({ onNavigate }) {
     const { reportData } = useCaseStore();
@@ -65,20 +64,19 @@ export default function ReportPanel({ onNavigate }) {
                 <div className="p-8 border-b border-[#1E2D3D]">
                     <h2 className="text-lg font-bold text-white mb-4 uppercase tracking-wider">Executive Summary</h2>
                     <p className="text-[#8B9BB4] leading-relaxed mb-6" style={{ fontFamily: "'Georgia', serif" }}>
-                        "$LogFile transaction analysis revealed LSN sequence gaps
-                        indicating live tampering on a running system. $USN Journal
-                        correlation confirmed missing modification records for files
-                        with backdated $SI timestamps. Framework identified <strong className="text-[#FF2D2D] font-bold" style={{ fontFamily: 'Inter' }}>{summary.critical} Critical</strong> findings
-                        of deliberate NTFS metadata manipulation consistent
-                        with timestomping performed during live system operation."
+                        {hasLiveTampering
+                            ? <>"$LogFile transaction analysis revealed LSN sequence gaps indicating live tampering on a running system. $USN Journal correlation confirmed missing modification records for files with backdated $SI timestamps. Framework identified <strong className="text-[#FF2D2D] font-bold" style={{ fontFamily: 'Inter' }}>{summary.critical} Critical</strong> findings of deliberate NTFS metadata manipulation consistent with timestomping performed during live system operation."
+                            </>
+                            : <>"Analysis of NTFS metadata artifacts identified <strong className="text-[#FF2D2D] font-bold" style={{ fontFamily: 'Inter' }}>{summary.critical} Critical</strong> and <strong className="text-[#FF8C00] font-bold" style={{ fontFamily: 'Inter' }}>{summary.high} High</strong> severity findings across {findings?.length || 0} flagged files. Cross-referencing $SI/$FN timestamps with $USN Journal records reveals deliberate timestamp manipulation consistent with anti-forensic activity."
+                            </>}
                     </p>
 
                     {/* STATS */}
                     <div className="grid grid-cols-2 gap-4 mb-6 font-mono text-sm">
-                        <StatItem label="Total MFT Records Analyzed" value="14,832" />
-                        <StatItem label="Total USN Journal Entries" value="48,291" />
-                        <StatItem label="Total LogFile Transactions" value="12,447" />
-                        <StatItem label="Total Files Flagged" value={String(findings?.length || 3)} />
+                        <StatItem label="Total MFT Records Analyzed" value={(summary.total_mft_records ?? 0).toLocaleString()} />
+                        <StatItem label="Total USN Journal Entries" value={(summary.total_usn_entries ?? 0).toLocaleString()} />
+                        <StatItem label="Total LogFile Transactions" value={(summary.total_logfile_transactions ?? 0).toLocaleString()} />
+                        <StatItem label="Total Files Flagged" value={String(findings?.length || 0)} />
                     </div>
 
                     <div className="flex gap-4 font-mono font-bold text-base bg-[#050810] p-4 rounded-lg border border-[#1E2D3D]">
@@ -93,16 +91,9 @@ export default function ReportPanel({ onNavigate }) {
                 <div className="p-8 border-b border-[#1E2D3D]">
                     <h2 className="text-lg font-bold text-white mb-4 uppercase tracking-wider">NTFS Artifact Analysis</h2>
                     <div className="space-y-4">
-                        <ArtifactRow num={1} name="$MFT (Master File Table)" records="14,832" anomalies={3}
-                            detail="MFT sequence numbers inconsistent with claimed file ages on 2 records" />
-                        <ArtifactRow num={2} name="$Standard_Information ($SI)" records="14,832" anomalies={3}
-                            detail="$SI timestamps on file1.txt and doc2.docx predate their $FN arrival timestamps" />
-                        <ArtifactRow num={3} name="$File_Name ($FN)" records="14,832" anomalies={0}
-                            detail="$FN timestamps used as ground truth — written by NTFS kernel, not user-mode manipulable" />
-                        <ArtifactRow num={4} name="$USN Journal" records="48,291" anomalies={2}
-                            detail="Missing DATA_OVERWRITE records for files with claimed modification dates" />
-                        <ArtifactRow num={5} name="$LogFile" records="12,447" anomalies={1}
-                            detail="LSN gap of 6 units — missing entries between 0xA1B3 and 0xA1B9" />
+                        {(reportData.artifact_analysis || []).map((a, i) => (
+                            <ArtifactRow key={i} num={i + 1} name={a.name} records={String(a.records ?? 0).replace(/\B(?=(\d{3})+(?!\d))/g, ',')} anomalies={a.anomalies ?? 0} detail={a.detail} />
+                        ))}
                     </div>
                 </div>
 
@@ -114,10 +105,10 @@ export default function ReportPanel({ onNavigate }) {
                     <div className="grid grid-cols-2 gap-4 font-mono text-sm">
                         <MetaField label="Evidence Item" value={`Disk Image — ${case_info.device_label}`} />
                         <MetaField label="Acquired By" value={case_info.investigator} />
-                        <MetaField label="Acquisition Tool" value="FTK Imager / dd" />
-                        <MetaField label="Write Blocker Used" value="Yes" />
+                        <MetaField label="Image Hash (SHA-256)" value={case_info.image_hash || 'N/A'} />
+                        <MetaField label="Hash Status" value={case_info.image_hash?.startsWith('SHA256:') ? '✅ VERIFIED' : 'Pending'} />
                         <MetaField label="Analysis Tool" value="ChronoTrace v1.0" />
-                        <MetaField label="Hash Status" value="✅ VERIFIED" />
+                        <MetaField label="Analysis Date" value={new Date(case_info.created_at).toLocaleString()} />
                     </div>
                 </div>
 
@@ -126,8 +117,9 @@ export default function ReportPanel({ onNavigate }) {
                     <h2 className="text-lg font-bold text-white mb-4 uppercase tracking-wider">Conclusion</h2>
                     <p className="text-[#8B9BB4] leading-relaxed mb-4" style={{ fontFamily: "'Georgia', serif" }}>
                         This forensic analysis has identified deliberate anti-forensic activity on the examined device with
-                        HIGH confidence (94%). The primary technique identified is TIMESTOMPING — the deliberate manipulation
+                        {' '}{summary.overall_risk_label} confidence ({summary.overall_risk_score}/100). The primary technique identified is TIMESTOMPING — the deliberate manipulation
                         of NTFS $Standard_Information timestamps to obscure the true timeline of file activity.
+                        {hasLiveTampering && ' Evidence of LIVE TAMPERING was found, indicating the attacker had active access to the operating system during the manipulation.'}
                     </p>
                     <div className="bg-[#050810] border border-[#1E2D3D] rounded-lg p-4 font-mono text-sm">
                         <h4 className="text-[#00D4FF] font-bold mb-2">RECOMMENDATIONS:</h4>
@@ -146,12 +138,6 @@ export default function ReportPanel({ onNavigate }) {
 
             {/* EXPORT BUTTONS */}
             <div className="flex gap-4 justify-center">
-                <button
-                    onClick={() => generateDetailedPDF(reportData)}
-                    className="flex items-center gap-2 bg-[#00D4FF]/10 border border-[#00D4FF]/30 text-[#00D4FF] px-6 py-3 rounded-xl font-mono text-sm hover:bg-[#00D4FF]/20 transition"
-                >
-                    <Download className="w-4 h-4" /> EXPORT DETAILED PDF
-                </button>
                 <button
                     onClick={() => {
                         const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(reportData, null, 2));

@@ -30,3 +30,7 @@ coverage.xml
 .vscode/
 .idea/
 .gemini/
+
+# project specific
+ref/
+backend/uploads

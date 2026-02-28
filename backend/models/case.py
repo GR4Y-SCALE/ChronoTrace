@@ -6,7 +6,6 @@ class CaseBase(BaseModel):
     investigator: str
     device_label: str
     notes: Optional[str] = ""
-    analysis_mode: str = "Deep Analysis"
 
 class CaseCreate(CaseBase):
     pass

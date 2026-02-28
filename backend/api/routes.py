@@ -8,8 +8,9 @@ from core.detector import Detector
 from core.timeline import TimelineGenerator
 from core.reporter import Reporter
 from api.websocket import manager
-from typing import List
 from datetime import datetime
+from pathlib import Path
+import hashlib
 import uuid
 import json
 
@@ -19,51 +20,91 @@ router = APIRouter()
 CASES_DB = {}
 REPORTS_DB = {}
 
-async def run_analysis(case_id: str, image_path: str):
+UPLOAD_DIR = Path(__file__).resolve().parent.parent / "uploads"
+UPLOAD_DIR.mkdir(exist_ok=True)
+
+
+async def run_analysis(case_id: str):
     import asyncio
-    await asyncio.sleep(0.5) # Allow time for frontend WebSocket to connect
+    await asyncio.sleep(0.5)  # let frontend WS connect
     case = CASES_DB[case_id]
     case.status = "analyzing"
-    
+
+    case_dir = UPLOAD_DIR / case_id
+
     async def send_progress(msg: str):
         await manager.send_message(msg, case_id)
 
-    parser = NTFSParser(image_path)
-    
-    await send_progress("✅ Image mounted successfully")
-    await send_progress("✅ NTFS partition detected")
-    
-    mft = await parser.parse_mft(send_progress)
-    case.progress = 25
-    await send_progress(json.dumps({"progress": 25}))
-    
-    usn = await parser.parse_usn(send_progress)
-    case.progress = 40
-    await send_progress(json.dumps({"progress": 40}))
-    
+    # Look for uploaded disk image (E01 segments)
+    image_path = None
+    for ext in (".E01", ".e01"):
+        candidates = list(case_dir.glob(f"*{ext}"))
+        if candidates:
+            image_path = candidates[0]
+            break
+
+    if not image_path:
+        await send_progress("❌ No disk image found in upload directory")
+        case.status = "failed"
+        return
+
+    await send_progress(f"✅ Disk image located: {image_path.name}")
+    parser = NTFSParser.from_image(str(image_path), str(case_dir))
+    opened = await parser.open_image(send_progress)
+    if not opened:
+        await send_progress("❌ Failed to open NTFS volume from disk image")
+        case.status = "failed"
+        return
+
+    # Phase 1: Parse
+    mft_df = await parser.parse_mft(send_progress)
+    case.progress = 20
+    await send_progress(json.dumps({"progress": 20}))
+
+    usn_df = await parser.parse_usn(send_progress)
+    if usn_df.empty:
+        await send_progress("❌ $USN Journal is required for strict analysis")
+        case.status = "failed"
+        return
+    case.progress = 35
+    await send_progress(json.dumps({"progress": 35}))
+
     logfile = await parser.parse_logfile(send_progress)
-    case.progress = 55
-    await send_progress(json.dumps({"progress": 55}))
-    
-    correlator = Correlator(mft, usn, logfile)
+    if logfile.get("total_transactions", 0) <= 0:
+        await send_progress("❌ $LogFile data is required for strict analysis")
+        case.status = "failed"
+        return
+    case.progress = 50
+    await send_progress(json.dumps({"progress": 50}))
+
+    # Phase 2: Correlate & flag candidates
+    correlator = Correlator(mft_df, usn_df, logfile)
     correlated = await correlator.correlate(send_progress)
     case.progress = 70
     await send_progress(json.dumps({"progress": 70}))
-    
+
+    # Phase 3+4: Feature scoring + rule detection
     detector = Detector(correlated)
     findings = await detector.analyze(send_progress)
     case.progress = 90
     await send_progress(json.dumps({"progress": 90, "findings_count": len(findings)}))
-    
+
+    # Timeline
     timeline_gen = TimelineGenerator(findings)
     timeline_events = timeline_gen.generate()
-    
+
+    # Report
     await send_progress("⏳ Reporter — Generating final court report...")
-    reporter = Reporter(case, findings, timeline_events)
+    parser_stats = {
+        "total_mft": parser.total_mft,
+        "total_usn": parser.total_usn,
+        "total_logfile": logfile.get("total_transactions", 0),
+    }
+    reporter = Reporter(case, findings, timeline_events, parser_stats)
     full_report = reporter.generate_report_object()
-    
+
     REPORTS_DB[case_id] = full_report
-    
+
     case.status = "completed"
     case.progress = 100
     await send_progress(json.dumps({"progress": 100, "status": "completed"}))
@@ -85,18 +126,35 @@ async def create_case(case_data: CaseCreate):
 async def upload_image(case_id: str, file: UploadFile = File(...)):
     if case_id not in CASES_DB:
         raise HTTPException(status_code=404, detail="Case not found")
-        
+
     case = CASES_DB[case_id]
-    # Simulating saving the file and generating a hash
-    case.image_hash = "SHA256:3a4f8b9c... (Simulated Hash for " + file.filename + ")"
-    return {"status": "ok", "message": "File uploaded successfully", "case": case}
+
+    # Create case directory and save the uploaded file
+    case_dir = UPLOAD_DIR / case_id
+    case_dir.mkdir(parents=True, exist_ok=True)
+
+    filename = file.filename or "upload.bin"
+    file_path = case_dir / filename
+    sha256 = hashlib.sha256()
+
+    with open(file_path, "wb") as f:
+        while True:
+            chunk = await file.read(1024 * 1024)  # 1 MB chunks
+            if not chunk:
+                break
+            f.write(chunk)
+            sha256.update(chunk)
+
+    case.image_hash = f"SHA256:{sha256.hexdigest()}"
+
+    return {"status": "ok", "message": "File uploaded successfully", "hash": case.image_hash, "case": case}
 
 @router.post("/cases/{case_id}/analyze")
 async def start_analysis(case_id: str, background_tasks: BackgroundTasks):
     if case_id not in CASES_DB:
         raise HTTPException(status_code=404, detail="Case not found")
         
-    background_tasks.add_task(run_analysis, case_id, "mock_image_path.dd")
+    background_tasks.add_task(run_analysis, case_id)
     return {"status": "Analysis started"}
 
 @router.get("/cases/{case_id}", response_model=Case)
@@ -110,68 +168,4 @@ async def get_report(case_id: str):
     if case_id not in REPORTS_DB:
         raise HTTPException(status_code=404, detail="Report not ready or missing")
     return REPORTS_DB[case_id].model_dump()
-
-@router.get("/cases/{case_id}/pdf")
-async def get_report_pdf(case_id: str):
-    from fastapi.responses import Response
-    from reportlab.pdfgen import canvas
-    from reportlab.lib.pagesizes import letter
-    from reportlab.lib.units import inch
-    import io
-
-    if case_id not in REPORTS_DB:
-        raise HTTPException(status_code=404, detail="Report not ready or missing")
-    
-    report = REPORTS_DB[case_id]
-    case_info = report.case_info
-    summary = report.summary
-    findings = report.findings
-
-    buffer = io.BytesIO()
-    c = canvas.Canvas(buffer, pagesize=letter)
-    width, height = letter
-
-    # Header
-    c.setFont("Helvetica-Bold", 20)
-    c.setStrokeColorRGB(1, 0, 0)
-    c.drawString(1 * inch, height - 1 * inch, "ANTI-FORENSICS ANALYSIS REPORT")
-    c.line(1 * inch, height - 1.1 * inch, width - 1 * inch, height - 1.1 * inch)
-
-    # Case Info
-    c.setFont("Helvetica-Bold", 12)
-    c.drawString(1 * inch, height - 1.5 * inch, f"Case ID: {case_info.id}")
-    c.setFont("Helvetica", 10)
-    c.drawString(1 * inch, height - 1.7 * inch, f"Investigator: {case_info.investigator}")
-    c.drawString(1 * inch, height - 1.9 * inch, f"Device Label: {case_info.device_label}")
-    c.drawString(1 * inch, height - 2.1 * inch, f"Date: {case_info.created_at.strftime('%Y-%m-%d %H:%M:%S UTC')}")
-    c.drawString(1 * inch, height - 2.3 * inch, f"Risk Score: {summary.overall_risk_score}/100 ({summary.overall_risk_label})")
-
-    y = height - 2.8 * inch
-    c.setFont("Helvetica-Bold", 14)
-    c.drawString(1 * inch, y, "Flagged Artifacts:")
-    y -= 0.3 * inch
-    
-    c.setFont("Helvetica", 10)
-    for finding in findings:
-        if y < 1 * inch:
-            c.showPage()
-            y = height - 1 * inch
-            c.setFont("Helvetica", 10)
-            
-        c.setFont("Helvetica-Bold", 10)
-        c.drawString(1 * inch, y, f"File: {finding.filename} (Risk: {finding.risk_level})")
-        y -= 0.2 * inch
-        
-        c.setFont("Helvetica", 9)
-        c.drawString(1.2 * inch, y, f"Court Explanation: {finding.court_explanation}")
-        y -= 0.3 * inch
-
-    c.save()
-    buffer.seek(0)
-    
-    return Response(
-        content=buffer.getvalue(),
-        media_type="application/pdf",
-        headers={"Content-Disposition": f"attachment; filename=Analysis_Report_{case_id}.pdf"}
-    )
 

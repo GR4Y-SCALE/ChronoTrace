@@ -141,30 +141,24 @@ export default function FileDeepDive({ file, onBack, onNavigate }) {
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    <tr className="border-t border-[#1E2D3D]/30">
-                                        <td className="py-2.5 text-[#8B9BB4]">0xA1B2</td>
-                                        <td className="text-white">FileCreate</td>
-                                        <td className="text-[#8B9BB4]">2025-01-15</td>
-                                        <td className="text-[#00FF88]">✅ OK</td>
-                                    </tr>
-                                    <tr className="border-t border-[#1E2D3D]/30">
-                                        <td className="py-2.5 text-[#8B9BB4]">0xA1B3</td>
-                                        <td className="text-white">AttributeUpdate</td>
-                                        <td className="text-[#8B9BB4]">2025-01-15</td>
-                                        <td className="text-[#00FF88]">✅ OK</td>
-                                    </tr>
-                                    <tr className="border-t border-[#1E2D3D]/30 bg-[#FF2D2D]/5">
-                                        <td className="py-2.5 text-[#FF2D2D] font-bold">0xA1B9</td>
-                                        <td className="text-white">MetadataWrite</td>
-                                        <td className="text-[#8B9BB4]">2025-01-15</td>
-                                        <td className="text-[#FF2D2D] font-bold">⚠️ GAP</td>
-                                    </tr>
+                                    {(file.logfile_analysis?.transactions || []).map((tx, idx) => (
+                                        <tr key={idx} className={`border-t border-[#1E2D3D]/30 ${tx.status === 'GAP' ? 'bg-[#FF2D2D]/5' : ''}`}>
+                                            <td className={`py-2.5 ${tx.status === 'GAP' ? 'text-[#FF2D2D] font-bold' : 'text-[#8B9BB4]'}`}>{tx.lsn}</td>
+                                            <td className="text-white">{tx.operation}</td>
+                                            <td className="text-[#8B9BB4]">{tx.timestamp}</td>
+                                            <td className={tx.status === 'GAP' ? 'text-[#FF2D2D] font-bold' : 'text-[#00FF88]'}>
+                                                {tx.status === 'GAP' ? '⚠️ GAP' : '✅ OK'}
+                                            </td>
+                                        </tr>
+                                    ))}
                                 </tbody>
                             </table>
-                            <div className="bg-[#FF2D2D]/5 border border-[#FF2D2D]/20 p-3 rounded-lg">
-                                <p className="text-[#FF2D2D]">LSN Gap: Expected 1-2 units. Actual: 6 units (0xA1B3 → 0xA1B9)</p>
-                                <p className="text-[#8B9BB4] text-xs mt-1">Missing entries indicate log manipulation or live tampering.</p>
-                            </div>
+                            {file.logfile_analysis?.gap_detected && (
+                                <div className="bg-[#FF2D2D]/5 border border-[#FF2D2D]/20 p-3 rounded-lg">
+                                    <p className="text-[#FF2D2D]">{file.logfile_analysis.gap_detail}</p>
+                                    <p className="text-[#8B9BB4] text-xs mt-1">Missing entries indicate log manipulation or live tampering.</p>
+                                </div>
+                            )}
                         </div>
                     </div>
 
@@ -177,28 +171,44 @@ export default function FileDeepDive({ file, onBack, onNavigate }) {
                             {/* PRESENT */}
                             <div className="p-4">
                                 <h4 className="text-xs text-[#00FF88] font-bold mb-3 uppercase tracking-wider">✅ ENTRIES PRESENT</h4>
-                                <div className="bg-[#00FF88]/5 border border-[#00FF88]/20 p-3 rounded font-mono text-sm">
-                                    <span className="text-[#8B9BB4]">0x1A2B3C4D</span>
-                                    <span className="text-white ml-2">FILE_CREATE</span>
-                                    <span className="text-[#8B9BB4] ml-2">2025-01-15</span>
+                                <div className="space-y-2">
+                                    {(file.usn_analysis?.present || []).map((entry, idx) => (
+                                        <div key={idx} className="bg-[#00FF88]/5 border border-[#00FF88]/20 p-3 rounded font-mono text-sm">
+                                            <span className="text-[#8B9BB4]">{entry.usn_seq ? `0x${Number(entry.usn_seq).toString(16).toUpperCase()}` : ''}</span>
+                                            <span className="text-white ml-2">{entry.reason}</span>
+                                            <span className="text-[#8B9BB4] ml-2">{(entry.timestamp || '').slice(0, 10)}</span>
+                                        </div>
+                                    ))}
                                 </div>
                             </div>
                             {/* MISSING */}
                             <div className="p-4">
                                 <h4 className="text-xs text-[#FF2D2D] font-bold mb-3 uppercase tracking-wider">❌ ENTRIES MISSING</h4>
                                 <div className="space-y-2">
-                                    <div className="border border-dashed border-[#FF2D2D]/30 p-3 rounded font-mono text-sm bg-[#FF2D2D]/5">
-                                        <span className="text-[#FF2D2D] font-bold">[MISSING]</span>
-                                        <span className="text-[#8B9BB4] ml-2">DATA_OVERWRITE</span>
-                                        <span className="text-[#FF2D2D] ml-2">⚠️</span>
-                                    </div>
+                                    {(file.usn_analysis?.missing || []).length > 0 ? (
+                                        file.usn_analysis.missing.map((entry, idx) => (
+                                            <div key={idx} className="border border-dashed border-[#FF2D2D]/30 p-3 rounded font-mono text-sm bg-[#FF2D2D]/5">
+                                                <span className="text-[#FF2D2D] font-bold">[MISSING]</span>
+                                                <span className="text-[#8B9BB4] ml-2">{entry.reason}</span>
+                                                <span className="text-[#FF2D2D] ml-2">⚠️</span>
+                                            </div>
+                                        ))
+                                    ) : (
+                                        <div className="text-[#00FF88] font-mono text-sm p-3">No missing entries</div>
+                                    )}
                                 </div>
                             </div>
                         </div>
-                        <div className="p-4 bg-[#FF2D2D]/5 border-t border-[#FF2D2D]/20 font-mono text-sm">
-                            <p className="text-[#FF2D2D]">$SI claims modification on 2020-03-01 — BUT no USN entry exists</p>
-                            <p className="text-[#FF2D2D] font-bold mt-1">→ LIVE TAMPERING CONFIRMED</p>
-                        </div>
+                        {file.usn_analysis?.conclusion && (
+                            <div className={`p-4 border-t font-mono text-sm ${file.usn_analysis.missing?.length > 0
+                                ? 'bg-[#FF2D2D]/5 border-[#FF2D2D]/20'
+                                : 'bg-[#00FF88]/5 border-[#00FF88]/20'
+                            }`}>
+                                <p className={file.usn_analysis.missing?.length > 0 ? 'text-[#FF2D2D] font-bold' : 'text-[#00FF88]'}>
+                                    {file.usn_analysis.conclusion}
+                                </p>
+                            </div>
+                        )}
                     </div>
                 </div>
 

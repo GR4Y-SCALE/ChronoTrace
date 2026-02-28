@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useCaseStore } from '../store/caseStore';
-import { ShieldAlert, AlertTriangle, AlertCircle, Info, Download, ChevronRight, Zap, Clock, CheckSquare } from 'lucide-react';
-import { generateDetailedPDF } from '../utils/pdfGenerator';
+import { ShieldAlert, AlertTriangle, AlertCircle, Info, ChevronRight, Zap, Clock, CheckSquare } from 'lucide-react';
 
 export default function Dashboard({ onSelectFile, onNavigate }) {
     const { reportData } = useCaseStore();
@@ -102,29 +101,48 @@ export default function Dashboard({ onSelectFile, onNavigate }) {
                 <div className="rounded-xl border border-[#1E2D3D] p-6" style={{ background: '#111927' }}>
                     <h3 className="text-sm font-bold text-white mb-5 uppercase tracking-wider">Anomaly Category Distribution</h3>
                     <div className="flex items-center gap-8">
-                        {/* Simple donut */}
-                        <div className="relative w-40 h-40 shrink-0">
-                            <svg viewBox="0 0 36 36" className="w-full h-full transform -rotate-90">
-                                <circle cx="18" cy="18" r="14" fill="none" stroke="#1E2D3D" strokeWidth="3" />
-                                <circle cx="18" cy="18" r="14" fill="none" stroke="#FF2D2D" strokeWidth="3"
-                                    strokeDasharray="39.6 88" strokeDashoffset="0" className="drop-shadow-[0_0_4px_rgba(255,45,45,0.5)]" />
-                                <circle cx="18" cy="18" r="14" fill="none" stroke="#FF8C00" strokeWidth="3"
-                                    strokeDasharray="22 88" strokeDashoffset="-39.6" className="drop-shadow-[0_0_4px_rgba(255,140,0,0.5)]" />
-                                <circle cx="18" cy="18" r="14" fill="none" stroke="#FFD700" strokeWidth="3"
-                                    strokeDasharray="17.6 88" strokeDashoffset="-61.6" className="drop-shadow-[0_0_4px_rgba(255,215,0,0.5)]" />
-                                <circle cx="18" cy="18" r="14" fill="none" stroke="#00D4FF" strokeWidth="3"
-                                    strokeDasharray="8.8 88" strokeDashoffset="-79.2" className="drop-shadow-[0_0_4px_rgba(0,212,255,0.5)]" />
-                            </svg>
-                            <div className="absolute inset-0 flex items-center justify-center">
-                                <span className="font-mono text-lg font-bold text-white">{findings.length}</span>
-                            </div>
-                        </div>
-                        <div className="space-y-3 flex-1">
-                            <LegendItem color="#FF2D2D" label="Timestamp Alteration" pct={45} />
-                            <LegendItem color="#FF8C00" label="Log / Journal Evasion" pct={25} />
-                            <LegendItem color="#FFD700" label="Cross-Device Trace" pct={20} />
-                            <LegendItem color="#00D4FF" label="Metadata Contradiction" pct={10} />
-                        </div>
+                        {/* Simple donut — driven by report data */}
+                        {(() => {
+                            const dist = summary.anomaly_distribution || {};
+                            const total = Object.values(dist).reduce((a, b) => a + b, 0) || 1;
+                            const cats = [
+                                { key: "Timestamp", color: "#FF2D2D", label: "Timestamp Alteration" },
+                                { key: "Log Evasion", color: "#FF8C00", label: "Log / Journal Evasion" },
+                                { key: "Cross-Device", color: "#FFD700", label: "Cross-Device Trace" },
+                                { key: "Metadata", color: "#00D4FF", label: "Metadata Contradiction" },
+                            ];
+                            const circumference = 2 * Math.PI * 14; // ~87.96
+                            let offset = 0;
+                            const arcs = cats.map(c => {
+                                const pct = ((dist[c.key] || 0) / total);
+                                const dash = pct * circumference;
+                                const arc = { ...c, pct: Math.round(pct * 100), dash, offset: -offset };
+                                offset += dash;
+                                return arc;
+                            });
+                            return (
+                                <>
+                                    <div className="relative w-40 h-40 shrink-0">
+                                        <svg viewBox="0 0 36 36" className="w-full h-full transform -rotate-90">
+                                            <circle cx="18" cy="18" r="14" fill="none" stroke="#1E2D3D" strokeWidth="3" />
+                                            {arcs.map(a => (
+                                                <circle key={a.key} cx="18" cy="18" r="14" fill="none" stroke={a.color} strokeWidth="3"
+                                                    strokeDasharray={`${a.dash} ${circumference}`} strokeDashoffset={a.offset}
+                                                    className={`drop-shadow-[0_0_4px_${a.color}80]`} />
+                                            ))}
+                                        </svg>
+                                        <div className="absolute inset-0 flex items-center justify-center">
+                                            <span className="font-mono text-lg font-bold text-white">{findings.length}</span>
+                                        </div>
+                                    </div>
+                                    <div className="space-y-3 flex-1">
+                                        {arcs.map(a => (
+                                            <LegendItem key={a.key} color={a.color} label={a.label} pct={a.pct} />
+                                        ))}
+                                    </div>
+                                </>
+                            );
+                        })()}
                     </div>
                 </div>
             </div>
@@ -133,12 +151,6 @@ export default function Dashboard({ onSelectFile, onNavigate }) {
             <div className="rounded-xl border border-[#1E2D3D] overflow-hidden" style={{ background: '#111927' }}>
                 <div className="p-5 border-b border-[#1E2D3D] flex justify-between items-center bg-[#0D1117]">
                     <h3 className="text-sm font-bold text-white uppercase tracking-wider">FLAGGED FILES ({findings.length})</h3>
-                    <button
-                        onClick={() => generateDetailedPDF(reportData)}
-                        className="flex items-center gap-2 text-sm bg-[#00D4FF]/10 border border-[#00D4FF]/30 text-[#00D4FF] px-4 py-2 rounded-lg transition hover:bg-[#00D4FF]/20 font-mono"
-                    >
-                        <Download className="w-4 h-4" /> Export PDF
-                    </button>
                 </div>
                 <div className="overflow-x-auto">
                     <table className="w-full text-left">

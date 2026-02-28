@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useCaseStore } from '../store/caseStore';
 import { WS_BASE_URL, api } from '../api/client';
 import { Activity, CheckCircle2, ChevronRight, XCircle, FileSearch, Cpu } from 'lucide-react';
@@ -7,6 +7,7 @@ export default function ProgressPanel() {
     const { currentCase, setReportData, progress, setProgress, status, setStatus, logs, addLog } = useCaseStore();
     const wsRef = useRef(null);
     const logEndRef = useRef(null);
+    const [scannedCount, setScannedCount] = useState(null);
 
     useEffect(() => {
         if (status === 'analyzing' && currentCase?.id && !wsRef.current) {
@@ -19,6 +20,9 @@ export default function ProgressPanel() {
                     if (data.progress !== undefined) {
                         setProgress(data.progress);
                     }
+                    if (data.findings_count !== undefined) {
+                        setScannedCount(prev => prev); // keep existing
+                    }
                     if (data.status === 'completed') {
                         const report = await api.getReport(currentCase.id);
                         setReportData(report);
@@ -26,7 +30,20 @@ export default function ProgressPanel() {
                         if (wsRef.current) wsRef.current.close();
                     }
                 } catch (e) {
-                    addLog(event.data);
+                    const msg = event.data;
+                    addLog(msg);
+                    // Extract real record counts from parser messages
+                    const mftMatch = msg.match(/([\d,]+)\s*records?\s*found/i);
+                    const usnMatch = msg.match(/([\d,]+)\s*entries/i);
+                    if (mftMatch) {
+                        setScannedCount(mftMatch[1]);
+                    } else if (usnMatch) {
+                        const current = parseInt((usnMatch[1] || '0').replace(/,/g, ''));
+                        setScannedCount(prev => {
+                            const prevNum = parseInt((prev || '0').toString().replace(/,/g, ''));
+                            return (prevNum + current).toLocaleString();
+                        });
+                    }
                 }
             };
 
@@ -129,7 +146,7 @@ export default function ProgressPanel() {
                                     <FileSearch className="w-3 h-3" /> Objects Scanned
                                 </div>
                                 <div className="text-3xl font-mono font-bold text-[#00D4FF]">
-                                    {progress >= 25 ? '14,832' : '...'}
+                                    {scannedCount || '...'}
                                 </div>
                             </div>
                         </div>
