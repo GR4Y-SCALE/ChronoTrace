@@ -1,0 +1,274 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 222 84% 2%;
+    --foreground: 0 0% 100%;
+
+    --card: 220 30% 8%;
+    --card-foreground: 0 0% 100%;
+
+    --popover: 220 30% 8%;
+    --popover-foreground: 0 0% 100%;
+
+    --primary: 189 100% 50%;
+    --primary-foreground: 222 47% 11%;
+
+    --secondary: 216 28% 12%;
+    --secondary-foreground: 0 0% 100%;
+
+    --muted: 216 28% 12%;
+    --muted-foreground: 218 22% 62%;
+
+    --accent: 216 28% 12%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 0 100% 59%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 210 30% 18%;
+    --input: 220 30% 10%;
+    --ring: 189 100% 50%;
+
+    --radius: 0.5rem;
+
+    /* Custom tokens */
+    --cyber-cyan: #00D4FF;
+    --cyber-red: #FF2D2D;
+    --cyber-orange: #FF8C00;
+    --cyber-green: #00FF88;
+    --bg-deep: #050810;
+    --bg-navy: #0D1117;
+    --bg-slate: #111927;
+    --border-blue: #1E2D3D;
+    --text-muted: #8B9BB4;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    background-color: var(--bg-deep);
+  }
+
+  .font-mono,
+  code,
+  pre,
+  .font-data {
+    font-family: 'JetBrains Mono', 'Courier New', monospace;
+  }
+}
+
+/* ===== CUSTOM ANIMATIONS ===== */
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+@keyframes glow-pulse {
+
+  0%,
+  100% {
+    box-shadow: 0 0 5px var(--cyber-cyan), 0 0 10px rgba(0, 212, 255, 0.3);
+  }
+
+  50% {
+    box-shadow: 0 0 15px var(--cyber-cyan), 0 0 30px rgba(0, 212, 255, 0.5);
+  }
+}
+
+@keyframes glow-red {
+
+  0%,
+  100% {
+    box-shadow: 0 0 5px var(--cyber-red), 0 0 10px rgba(255, 45, 45, 0.3);
+  }
+
+  50% {
+    box-shadow: 0 0 20px var(--cyber-red), 0 0 40px rgba(255, 45, 45, 0.5);
+  }
+}
+
+@keyframes scan-line {
+  0% {
+    transform: translateX(-100%);
+  }
+
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes counter-pop {
+  0% {
+    transform: scale(1);
+  }
+
+  50% {
+    transform: scale(1.15);
+  }
+
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes slide-in-right {
+  from {
+    opacity: 0;
+    transform: translateX(-30px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes border-pulse {
+
+  0%,
+  100% {
+    border-color: rgba(0, 212, 255, 0.3);
+  }
+
+  50% {
+    border-color: rgba(0, 212, 255, 0.8);
+  }
+}
+
+@keyframes typing-cursor {
+
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0;
+  }
+}
+
+@keyframes dot-appear {
+  from {
+    opacity: 0;
+    transform: scale(0);
+  }
+
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.animate-shimmer {
+  background: linear-gradient(90deg, transparent 0%, rgba(0, 212, 255, 0.15) 50%, transparent 100%);
+  background-size: 200% 100%;
+  animation: shimmer 2s infinite linear;
+}
+
+.animate-glow-cyan {
+  animation: glow-pulse 2s ease-in-out infinite;
+}
+
+.animate-glow-red {
+  animation: glow-red 1.5s ease-in-out infinite;
+}
+
+.animate-scan {
+  animation: scan-line 3s ease-in-out infinite;
+}
+
+.animate-fade-in-up {
+  animation: fade-in-up 0.6s ease-out forwards;
+}
+
+.animate-counter-pop {
+  animation: counter-pop 0.4s ease-out;
+}
+
+.animate-slide-in {
+  animation: slide-in-right 0.5s ease-out forwards;
+}
+
+.animate-border-pulse {
+  animation: border-pulse 2s ease-in-out infinite;
+}
+
+.animate-dot-appear {
+  animation: dot-appear 0.5s ease-out forwards;
+}
+
+/* Progress bar shimmer overlay */
+.progress-shimmer {
+  position: relative;
+  overflow: hidden;
+}
+
+.progress-shimmer::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+}
+
+/* Drop zone animation */
+.drop-zone-active {
+  border-color: var(--cyber-cyan) !important;
+  box-shadow: 0 0 20px rgba(0, 212, 255, 0.3), inset 0 0 20px rgba(0, 212, 255, 0.05);
+}
+
+/* Hexagonal grid background */
+.hex-bg {
+  background-image:
+    radial-gradient(circle at 25% 25%, rgba(0, 212, 255, 0.03) 0%, transparent 50%),
+    radial-gradient(circle at 75% 75%, rgba(255, 45, 45, 0.02) 0%, transparent 50%);
+  background-size: 100% 100%;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-deep);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-blue);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--cyber-cyan);
+}
