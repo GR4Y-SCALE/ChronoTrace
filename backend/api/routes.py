@@ -35,13 +35,24 @@ async def run_analysis(case_id: str):
     async def send_progress(msg: str):
         await manager.send_message(msg, case_id)
 
-    # Look for uploaded disk image (E01 segments)
+    # Look for uploaded disk image — prefer standalone single-segment images
+    # (no .E02 sibling) over multi-part split sets so Evidence01.E01 is always
+    # favoured even when EVIDENCE02.E01-E08 segments are also present.
     image_path = None
-    for ext in (".E01", ".e01"):
-        candidates = list(case_dir.glob(f"*{ext}"))
-        if candidates:
-            image_path = candidates[0]
+    all_e01s = sorted(
+        list(case_dir.glob("*.E01")) + list(case_dir.glob("*.e01")),
+        key=lambda p: p.name.lower(),
+    )
+    # First pass – standalone (no matching .E02 / .e02)
+    for cand in all_e01s:
+        stem = cand.stem
+        if not (cand.parent / f"{stem}.E02").exists() and \
+           not (cand.parent / f"{stem}.e02").exists():
+            image_path = cand
             break
+    # Second pass – fall back to first multi-segment set
+    if image_path is None and all_e01s:
+        image_path = all_e01s[0]
 
     if not image_path:
         await send_progress("❌ No disk image found in upload directory")

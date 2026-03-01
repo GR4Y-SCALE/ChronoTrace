@@ -177,15 +177,16 @@ def evaluate_rules(file_data: Dict[str, Any]) -> List[str]:
         triggered.append("RULE_04")
 
     # ---- R5: Hash/metadata mismatch (SI modified but content unchanged) ----
-    # If SI claims modification but no DATA_EXTEND or DATA_OVERWRITE in USN
-    # and the file has significant size, this indicates metadata-only tampering
+    # SI modified time diverges from FN modified time — the two copies of the
+    # modification timestamp should always stay in sync under normal writes.
+    # Divergence > 1 hour means one was tampered without touching the other.
     has_data_activity = any(
         "DATA_EXTEND" in r or "DATA_OVERWRITE" in r or "DATA_TRUNCATION" in r
         for r in usn_reasons
     )
-    if si_m and fn_c and not has_data_activity and len(usn_reasons) > 0:
-        file_size = file_data.get("size_bytes", 0)
-        if file_size > 0 and si_m != fn_c:
+    if si_m and fn_m and not has_data_activity and len(usn_reasons) > 0:
+        delta_mod = abs((si_m - fn_m).total_seconds())
+        if delta_mod > 3600:  # > 1 hour divergence between SI and FN modified
             triggered.append("RULE_05")
 
     # ---- R6: Embedded timestamp conflict ----
@@ -210,12 +211,23 @@ def evaluate_rules(file_data: Dict[str, Any]) -> List[str]:
         triggered.append("RULE_08")
 
     # ---- R9: USN reason code gap (SI shows mod, no DATA_OVERWRITE) ----
-    if has_basic_info_change and not has_data_overwrite:
+    # Must also show a timestamp anomaly — either backdating (SI modified<FN
+    # created) or SI/FN modification divergence — to avoid false positives from
+    # every legitimate app that touches file metadata without writing data.
+    si_fn_mod_diverge = bool(
+        si_m and fn_m and abs((si_m - fn_m).total_seconds()) > 3600
+    )
+    si_predates_fn_create = bool(si_m and fn_c and si_m < fn_c)
+    if has_basic_info_change and not has_data_overwrite and (si_fn_mod_diverge or si_predates_fn_create):
         triggered.append("RULE_09")
 
     # ---- R10: Rapid metadata rewrite ----
+    # Require 3+ BASIC_INFO_CHANGE events AND that the resulting SI modified
+    # timestamp ended up BEFORE the FN creation date (backdating fingerprint).
+    # Threshold of 2 without the backdating check fires on any browser writing
+    # its state files, generating constant false positives.
     bic_count = sum(1 for r in usn_reasons if "BASIC_INFO_CHANGE" in r)
-    if bic_count >= 2:
+    if bic_count >= 3 and si_predates_fn_create:
         triggered.append("RULE_10")
 
     # ---- R11: I30 slack anomaly ----
