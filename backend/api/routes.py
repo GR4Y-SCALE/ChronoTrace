@@ -35,24 +35,36 @@ async def run_analysis(case_id: str):
     async def send_progress(msg: str):
         await manager.send_message(msg, case_id)
 
-    # Look for uploaded disk image — prefer standalone single-segment images
-    # (no .E02 sibling) over multi-part split sets so Evidence01.E01 is always
-    # favoured even when EVIDENCE02.E01-E08 segments are also present.
+    # Look for uploaded disk image.
+    # Priority order:
+    #   1. Standalone .E01 (no .E02 sibling) — single-segment image
+    #   2. Any .E01 (first segment of a multi-part set)
+    #   3. Any single EWF fragment (.E02, .E03, …) — partial upload
     image_path = None
     all_e01s = sorted(
         list(case_dir.glob("*.E01")) + list(case_dir.glob("*.e01")),
         key=lambda p: p.name.lower(),
     )
-    # First pass – standalone (no matching .E02 / .e02)
+    # Pass 1 – standalone (no matching .E02 / .e02)
     for cand in all_e01s:
         stem = cand.stem
         if not (cand.parent / f"{stem}.E02").exists() and \
            not (cand.parent / f"{stem}.e02").exists():
             image_path = cand
             break
-    # Second pass – fall back to first multi-segment set
+    # Pass 2 – fall back to first .E01 of a multi-segment set
     if image_path is None and all_e01s:
         image_path = all_e01s[0]
+    # Pass 3 – accept any single EWF fragment (.E02, .E03, …)
+    if image_path is None:
+        import re
+        all_frags = sorted(
+            [p for p in case_dir.iterdir()
+             if re.fullmatch(r'.+\.e\d{2,}', p.name, re.IGNORECASE)],
+            key=lambda p: p.name.lower(),
+        )
+        if all_frags:
+            image_path = all_frags[0]
 
     if not image_path:
         await send_progress("❌ No disk image found in upload directory")

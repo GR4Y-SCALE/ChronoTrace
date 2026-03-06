@@ -17,6 +17,51 @@ NTFS_GUID = bytes([0xA2, 0xA0, 0xD0, 0xEB, 0xE5, 0xB9, 0x33, 0x44,
                     0x87, 0xC0, 0x68, 0xB6, 0xB7, 0x26, 0x99, 0xC7])
 
 
+class _FaultTolerantStream:
+    """Wraps an EWF stream and returns zero-filled bytes for unreadable chunks.
+    This lets the NTFS parser work with a single fragment even when adjacent
+    segments are absent — reads that fall outside available data return zeros
+    instead of raising EWFError.
+    """
+    def __init__(self, fh):
+        self.fh = fh
+        self.size = fh.size
+        self._pos = 0
+
+    def seek(self, pos, whence=0):
+        if whence == 0:
+            self._pos = pos
+        elif whence == 1:
+            self._pos += pos
+        elif whence == 2:
+            self._pos = self.size + pos
+        return self._pos
+
+    def tell(self):
+        return self._pos
+
+    def read(self, n=-1):
+        if n == -1:
+            n = self.size - self._pos
+        if n <= 0:
+            return b""
+        try:
+            self.fh.seek(self._pos)
+            data = self.fh.read(n)
+        except Exception:
+            data = b"\x00" * n
+        self._pos += len(data)
+        # Pad to requested length if the stream ran short
+        if len(data) < n:
+            data = data + b"\x00" * (n - len(data))
+        return data
+
+    def readinto(self, b):
+        data = self.read(len(b))
+        b[: len(data)] = data
+        return len(data)
+
+
 class _OffsetStream:
     """Wraps a seekable stream to expose a partition slice as a file-like."""
     def __init__(self, fh, offset: int, size: int):
@@ -98,6 +143,21 @@ def _ts(dt) -> str:
         return "N/A"
 
 
+_FILETIME_EPOCH_DELTA = 11_644_473_600  # seconds between 1601-01-01 and 1970-01-01
+
+
+def _filetime_to_dt(ft: int):
+    """Convert a Windows FILETIME (100-ns ticks since 1601) to a datetime, or None."""
+    if ft <= 0:
+        return None
+    try:
+        from datetime import datetime, timezone
+        ts = ft / 10_000_000 - _FILETIME_EPOCH_DELTA
+        return datetime.fromtimestamp(ts, tz=timezone.utc).replace(tzinfo=None)
+    except Exception:
+        return None
+
+
 # ── Main parser ──────────────────────────────────────────────────────
 
 class NTFSParser:
@@ -113,6 +173,11 @@ class NTFSParser:
         self.total_mft: int = 0
         self.total_usn: int = 0
         self.image_path: Optional[Path] = None
+        # Raw-mode fields (used when dissect.ntfs cannot init from a partial image)
+        self._raw_mode: bool = False
+        self._mft_byte_offset: int = 0   # byte offset of $MFT within the partition stream
+        self._cluster_size: int = 4096
+        self._mft_record_size: int = 1024
 
     # ── factory ────────────────────────────────────────────────────
     @classmethod
@@ -170,16 +235,49 @@ class NTFSParser:
         try:
             self._ewf = EWF(fhs)  # type: ignore[arg-type]
         except Exception as e:
-            if callback:
-                await callback(f"❌ EWF load failed: {e}")
-            return False
+            # Multi-segment open failed — try with just the single provided file.
+            # This handles fragmented uploads where only one segment is present.
+            if len(fhs) > 1:
+                for f in fhs:
+                    try:
+                        f.close()
+                    except Exception:
+                        pass
+                if callback:
+                    await callback(
+                        f"⚠️ Full segment set failed ({e}); "
+                        f"retrying with single fragment: {self.image_path.name}"
+                    )
+                fhs = [open(str(self.image_path), "rb")]
+                try:
+                    self._ewf = EWF(fhs)  # type: ignore[arg-type]
+                except Exception as e2:
+                    if callback:
+                        await callback(f"❌ EWF load failed: {e2}")
+                    return False
+            else:
+                if callback:
+                    await callback(f"❌ EWF load failed: {e}")
+                return False
 
         try:
             self._fh = self._ewf.open()
         except EWFError as e:
+            # EWF open can fail mid-stream if the segment is from a multi-part
+            # set but adjacent segments are absent.  Fall back to raw single-file.
             if callback:
-                await callback(f"❌ Failed to open EWF stream: {e}")
-            return False
+                await callback(
+                    f"⚠️ EWF stream incomplete ({e}); "
+                    "attempting single-fragment raw open…"
+                )
+            try:
+                raw_fhs = [open(str(self.image_path), "rb")]
+                self._ewf = EWF(raw_fhs)  # type: ignore[arg-type]
+                self._fh = self._ewf.open()
+            except Exception as e2:
+                if callback:
+                    await callback(f"❌ Failed to open EWF stream: {e2}")
+                return False
         except Exception as e:
             if callback:
                 await callback(f"❌ Unexpected EWF stream error: {e}")
@@ -188,6 +286,10 @@ class NTFSParser:
         if callback:
             size_gb = self._fh.size / (1024 ** 3)  # type: ignore[union-attr]
             await callback(f"✅ Disk image loaded — {size_gb:.2f} GB")
+
+        # Wrap in a fault-tolerant layer so missing EWF segments return zeros
+        # rather than raising EWFError mid-parse.
+        self._fh = _FaultTolerantStream(self._fh)  # type: ignore[assignment]
 
         # Find NTFS partition
         try:
@@ -200,18 +302,23 @@ class NTFSParser:
         self._part_fh = _OffsetStream(self._fh, offset, size)
         try:
             self.ntfs = NTFS(fh=self._part_fh)  # type: ignore[arg-type]
-        except EWFError as e:
-            if callback:
-                await callback(
-                    "❌ Incomplete EWF segment set. Ensure all split files "
-                    "(.E01, .E02, .E03, ...) are uploaded for this image."
-                )
-                await callback(f"❌ Detail: {e}")
-            return False
         except Exception as e:
             if callback:
-                await callback(f"❌ Failed to initialize NTFS parser: {e}")
-            return False
+                await callback(
+                    f"⚠️ dissect.ntfs init failed ({e}); "
+                    "switching to raw $Boot-guided MFT scan…"
+                )
+            if not self._init_raw_ntfs():
+                if callback:
+                    await callback("❌ Failed to locate $MFT via raw $Boot scan")
+                return False
+            if callback:
+                await callback(
+                    f"✅ NTFS partition found (raw mode) — offset {offset:#x}, "
+                    f"cluster size {self._cluster_size}, "
+                    f"MFT @ partition byte {self._mft_byte_offset:#x}"
+                )
+            return True
 
         if callback:
             await callback(
@@ -222,6 +329,126 @@ class NTFSParser:
 
         return True
 
+    # ── Raw NTFS bootstrap (partial-image fallback) ────────────────
+    def _init_raw_ntfs(self) -> bool:
+        """Parse $Boot sector directly to locate $MFT without using dissect.ntfs."""
+        try:
+            if self._part_fh is None:
+                return False
+            part_fh = self._part_fh
+
+            part_fh.seek(0)
+            boot = part_fh.read(512)
+            if boot[3:7] != b"NTFS":
+                return False
+
+            bytes_per_sector  = struct.unpack_from("<H", boot, 11)[0] or 512
+            raw_spc           = boot[13]
+            sectors_per_cluster = raw_spc if raw_spc else 8
+            self._cluster_size  = bytes_per_sector * sectors_per_cluster
+
+            # MFT record size: if byte 64 < 128 it's in clusters, else 2^(256-byte)
+            raw_rec = boot[64]
+            if raw_rec < 128:
+                self._mft_record_size = raw_rec * self._cluster_size
+            else:
+                self._mft_record_size = 2 ** (256 - raw_rec)
+            self._mft_record_size = self._mft_record_size or 1024
+
+            mft_cluster = struct.unpack_from("<Q", boot, 48)[0]
+            self._mft_byte_offset = mft_cluster * self._cluster_size
+            self._raw_mode = True
+            return True
+        except Exception:
+            return False
+
+    # ── Raw MFT record parser ──────────────────────────────────────
+    def _parse_raw_mft_record(self, rec_bytes: bytes, rec_num: int) -> Optional[dict]:
+        """Parse a single raw 1024-byte MFT record and return a row dict or None."""
+        if len(rec_bytes) < 48 or rec_bytes[:4] != b"FILE":
+            return None
+        try:
+            # Apply Update Sequence Array fixup
+            usn_off  = struct.unpack_from("<H", rec_bytes, 4)[0]
+            usn_size = struct.unpack_from("<H", rec_bytes, 6)[0]
+            data = bytearray(rec_bytes)
+            if usn_off and usn_size > 1:
+                usn_num = struct.unpack_from("<H", data, usn_off)[0]
+                for i in range(1, usn_size):
+                    sector_end = i * 512 - 2
+                    if sector_end + 2 <= len(data):
+                        # Only patch if the sector end still holds the USN
+                        if struct.unpack_from("<H", data, sector_end)[0] == usn_num:
+                            orig = struct.unpack_from("<H", data, usn_off + i * 2)[0]
+                            struct.pack_into("<H", data, sector_end, orig)
+
+            lsn  = struct.unpack_from("<Q", data, 8)[0]
+            seq  = struct.unpack_from("<H", data, 16)[0]
+            flags = struct.unpack_from("<H", data, 22)[0]
+            attr_off = struct.unpack_from("<H", data, 20)[0]
+            is_dir   = bool(flags & 0x02)
+
+            si_created = si_mod = si_access = si_change = None
+            si_created_ns = 0
+            fn_name = None
+            fn_created = fn_mod = None
+            file_size = 0
+
+            pos = attr_off
+            while pos + 8 <= len(data):
+                attr_type   = struct.unpack_from("<I", data, pos)[0]
+                attr_len    = struct.unpack_from("<I", data, pos + 4)[0]
+                if attr_type == 0xFFFFFFFF or attr_len == 0:
+                    break
+                non_resident = data[pos + 8]
+                if non_resident == 0 and pos + 20 <= len(data):
+                    val_len = struct.unpack_from("<I", data, pos + 16)[0]
+                    val_off = struct.unpack_from("<H", data, pos + 20)[0]
+                    val_start = pos + val_off
+                    val_end   = val_start + val_len
+                    if val_end <= len(data):
+                        val = data[val_start:val_end]
+                        if attr_type == 0x10 and len(val) >= 32:  # $STANDARD_INFORMATION
+                            si_created  = _filetime_to_dt(struct.unpack_from("<Q", val, 0)[0])
+                            si_mod      = _filetime_to_dt(struct.unpack_from("<Q", val, 8)[0])
+                            si_change   = _filetime_to_dt(struct.unpack_from("<Q", val, 16)[0])
+                            si_access   = _filetime_to_dt(struct.unpack_from("<Q", val, 24)[0])
+                            si_created_ns = struct.unpack_from("<Q", val, 0)[0] * 100
+                        elif attr_type == 0x30 and len(val) >= 66:  # $FILE_NAME
+                            fname_len  = val[64]
+                            namespace  = val[65]
+                            # Prefer Win32 or Win32&DOS (namespace 1 or 3) over DOS (2)
+                            if fn_name is None or namespace in (1, 3):
+                                raw_name = bytes(val[66:66 + fname_len * 2])
+                                fn_name  = raw_name.decode("utf-16-le", errors="replace")
+                                fn_created = _filetime_to_dt(struct.unpack_from("<Q", val, 8)[0])
+                                fn_mod     = _filetime_to_dt(struct.unpack_from("<Q", val, 16)[0])
+                                if len(val) >= 56:
+                                    file_size = struct.unpack_from("<Q", val, 48)[0]
+                pos += attr_len
+
+            if fn_name is None:
+                return None
+
+            return {
+                "EntryNumber": rec_num,
+                "SequenceNumber": seq,
+                "FileName": fn_name,
+                "ParentPath": "",
+                "FileSize": file_size,
+                "IsDirectory": is_dir,
+                "Created0x10": _ts(si_created),
+                "LastModified0x10": _ts(si_mod),
+                "LastAccess0x10": _ts(si_access),
+                "LastRecordChange0x10": _ts(si_change),
+                "Created0x10_raw": str(si_created_ns),
+                "Created0x30": _ts(fn_created),
+                "LastModified0x30": _ts(fn_mod),
+                "LogfileSequenceNumber": lsn,
+            }
+        except Exception:
+            return None
+
     # ── Phase 1a: MFT ─────────────────────────────────────────────
     async def parse_mft(self, callback: Optional[Callable] = None) -> pd.DataFrame:
         if callback:
@@ -230,8 +457,50 @@ class NTFSParser:
 
         rows = []
         count = 0
+
+        # ── Raw-mode fallback (partial fragment, dissect.ntfs unavailable) ──
         if self.ntfs is None:
-            return pd.DataFrame()
+            if not self._raw_mode or self._part_fh is None:
+                return pd.DataFrame()
+            if callback:
+                await callback("⚙️ $MFT — Raw scan mode (partial image)…")
+            rec_size = self._mft_record_size
+            self._part_fh.seek(self._mft_byte_offset)
+            rec_num = 0
+            consecutive_empty = 0
+            _MAX_EMPTY = 512   # stop after 512KB of consecutive non-FILE records
+            while True:
+                raw = self._part_fh.read(rec_size)
+                if not raw or len(raw) < rec_size:
+                    break
+                count += 1
+                if count % 5000 == 0:
+                    await asyncio.sleep(0)
+                    if callback and count % 20000 == 0:
+                        await callback(f"⚙️ $MFT — {count:,} records scanned (raw)…")
+                row = self._parse_raw_mft_record(bytes(raw), rec_num)
+                if row:
+                    rows.append(row)
+                    consecutive_empty = 0
+                else:
+                    consecutive_empty += 1
+                    if consecutive_empty >= _MAX_EMPTY:
+                        break  # well past the end of the MFT
+                rec_num += 1
+            df = pd.DataFrame(rows)
+            ts_cols = [
+                "Created0x10", "LastModified0x10", "LastAccess0x10",
+                "LastRecordChange0x10", "Created0x30", "LastModified0x30",
+            ]
+            for col in ts_cols:
+                if col in df.columns:
+                    df[col] = pd.to_datetime(df[col], errors="coerce")
+            self.mft_df = df
+            self.total_mft = len(df)
+            if callback:
+                await callback(f"✅ $MFT parsed (raw) — {self.total_mft:,} records found")
+            return df
+        # ── Normal dissect.ntfs path ──────────────────────────────────────────
         for rec in self.ntfs.mft.segments():  # type: ignore[union-attr]
             count += 1
             # Yield control every 5000 records so WS messages can flush
